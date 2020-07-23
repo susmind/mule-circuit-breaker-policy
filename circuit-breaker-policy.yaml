@@ -1,0 +1,49 @@
+id: circuit-breaker-policy
+name: circuit-breaker-policy
+description: A Circuit Breaker
+category: Custom
+type: custom
+resourceLevelSupported: true
+encryptionSupported: false
+standalone: true
+requiredCharacteristics: []
+providedCharacteristics: []
+configuration:
+
+- propertyName: tripThreshold
+  name: Trip Threshold
+  description: Maximum number of errors allowed before the circuit is open.
+  type: int
+  minimumValue: 1 
+  maximumValue: 2147483647
+  optional: false
+  sensitive: false
+  allowMultiple: false
+
+- propertyName: tripResetTime
+  name: Trip Reset Time (seconds)
+  description: A sliding window in which the circuit breaker threshold is checked.
+  type: int
+  minimumValue: 1 
+  maximumValue: 2147483647
+  optional: false
+  sensitive: false
+  allowMultiple: false
+  
+- propertyName: openTimeout
+  name: Open Timeout (seconds)
+  description: A time window for which a circuit remains open.
+  type: int
+  minimumValue: 1 
+  maximumValue: 2147483647
+  optional: false
+  sensitive: false
+  allowMultiple: false
+  
+- propertyName: errorCodes
+  name: Error Codes
+  description: A comma separated list of error codes for which the circuit breaker criteria is evaluated.
+  type: string
+  optional: false
+  sensitive: false
+  allowMultiple: false

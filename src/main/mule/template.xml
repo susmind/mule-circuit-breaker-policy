@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:os="http://www.mulesoft.org/schema/mule/os"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:http-policy="http://www.mulesoft.org/schema/mule/http-policy"
+	xmlns:http-transform="http://www.mulesoft.org/schema/mule/http-policy-transform"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core
+http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http
+http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/http-policy
+http://www.mulesoft.org/schema/mule/http-policy/current/mule-http-policy.xsd
+http://www.mulesoft.org/schema/mule/http-policy-transform
+http://www.mulesoft.org/schema/mule/http-policy-transform/current/mule-http-policy-transform.xsd
+http://www.mulesoft.org/schema/mule/os
+http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+http://www.mulesoft.org/schema/mule/ee/core
+http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<os:object-store name="Circuit_Breaker_OS"
+		persistent="true" />
+
+	<http-policy:proxy
+		name="{{{policyId}}}-custom-policy">
+
+		<http-policy:source>
+
+			<try>
+				<os:retrieve key="#['Circuit_Breaker_Profile']"
+					objectStore="Circuit_Breaker_OS" target="cb_profile">
+					<os:default-value><![CDATA[#[null]]]></os:default-value>
+				</os:retrieve>
+				<logger level="INFO" message="#[vars.cb_profile]" />
+				<error-handler>
+					<on-error-continue enableNotifications="true"
+						logException="true" type="OS:KEY_NOT_FOUND">
+						<logger level="INFO" message="Key Not Found Exception" />
+						<ee:transform>
+							<ee:message>
+							</ee:message>
+							<ee:variables>
+								<ee:set-variable variableName="cb_profile"><![CDATA[%dw 2.0
+output application/json
+---
+{
+status: "CLOSED",
+tripCount: 0,
+tripThreshold: {{{tripThreshold}}}, //Config
+tripStartTime: null, 
+tripResetTime: {{{tripResetTime}}}, //Conf
+openTime: null, 
+openTimeout: {{{openTimeout}}}, //Conf
+errorCodes: "{{{errorCodes}}}" //Conf
+}]]></ee:set-variable>
+							</ee:variables>
+						</ee:transform>
+						<os:store key="#['Circuit_Breaker_Profile']"
+							objectStore="Circuit_Breaker_OS">
+							<os:value><![CDATA[#[vars.cb_profile]]]></os:value>
+						</os:store>
+					</on-error-continue>
+				</error-handler>
+			</try>
+			<choice>
+				<when
+					expression="#[vars.cb_profile.status == 'OPEN' and (now() as Number - vars.cb_profile.openTime as Number) &gt;  (vars.cb_profile.openTimeout as Number)]">
+					<logger level="INFO" message="State is Half Open" />
+					<try>
+						<http-policy:execute-next />
+						<os:store key="#['Circuit_Breaker_Profile']"
+							objectStore="Circuit_Breaker_OS">
+							<os:value><![CDATA[#[%dw 2.0
+output application/json
+---
+{
+status: "CLOSED",
+tripCount: 0, // default 0
+tripThreshold: vars.cb_profile.tripThreshold, // conf
+tripStartTime: null,
+tripResetTime: vars.cb_profile.tripResetTime, // conf
+openTime: null, 
+openTimeout: vars.cb_profile.openTimeout, // conf
+errorCodes: vars.cb_profile.errorCodes // conf
+}]]]></os:value>
+						</os:store>
+						<error-handler>
+							<on-error-propagate enableNotifications="true"
+								logException="true"
+								when="#[vars.cb_profile.errorCodes contains attributes.statusCode]">
+								<os:store key="#['Circuit_Breaker_Profile']"
+									objectStore="Circuit_Breaker_OS">
+									<os:value><![CDATA[#[%dw 2.0
+output application/json
+---
+{
+status: "OPEN",
+tripCount: 0, // default 0
+tripThreshold: vars.cb_profile.tripThreshold, // conf
+tripStartTime: null, 
+tripResetTime: vars.cb_profile.tripResetTime, // conf
+openTime: now() as Number, 
+openTimeout: vars.cb_profile.openTimeout, //conf
+errorCodes: vars.cb_profile.errorCodes // conf
+}]]]></os:value>
+								</os:store>
+							</on-error-propagate>
+						</error-handler>
+					</try>
+				</when>
+				<when
+					expression="#[vars.cb_profile.status == 'OPEN' and (now() as Number - vars.cb_profile.openTime as Number) &lt;  (vars.cb_profile.openTimeout as Number)]">
+
+					<!--  Reply Circuit is Open -->
+					<http-transform:set-response statusCode="503" reasonPhrase="Circuit Breaker Active"> 
+						<http-transform:body>#['Circuit Breaker is Active since ' ++ vars.cb_profile.openTime ++ '. Time Elapsed: ' ++ (now() as Number - vars.cb_profile.openTime as Number) ++ '.']</http-transform:body>
+					</http-transform:set-response>
+					
+				</when>
+				<otherwise>
+					<logger level="INFO" message="State is Closed"/>
+					<try>
+						<http-policy:execute-next />
+						<error-handler>
+							<on-error-propagate enableNotifications="true"
+								logException="true"
+								when="#[vars.cb_profile.errorCodes contains attributes.statusCode]">
+								<ee:transform>
+									<ee:message>
+									</ee:message>
+									<ee:variables>
+										<ee:set-variable variableName="cb_profile"><![CDATA[%dw 2.0
+var currentTime = now() as Number
+var tripStartedSince = (currentTime - (vars.cb_profile.tripStartTime as Number default currentTime))
+var openStatus = if((vars.cb_profile.tripCount as Number + 1)> vars.cb_profile.tripThreshold as Number and tripStartedSince < vars.cb_profile.tripResetTime as Number) true else false
+var tripResetStatus = if(tripStartedSince> vars.cb_profile.tripResetTime as Number) true else false
+output application/json
+---
+if (openStatus == true) (
+{
+status: "OPEN",
+tripCount: 0, // default 0
+tripThreshold: vars.cb_profile.tripThreshold, // config
+tripStartTime: null, // null if closed
+tripResetTime: vars.cb_profile.tripResetTime, // config
+openTime: currentTime, //initially null
+openTimeout: vars.cb_profile.openTimeout, // conf
+errorCodes: vars.cb_profile.errorCodes // conf
+})
+else if (tripResetStatus == true)
+({
+status: "CLOSED",
+tripCount: 1, // reset
+tripThreshold: vars.cb_profile.tripThreshold,
+tripStartTime: currentTime, //reset
+tripResetTime: vars.cb_profile.tripResetTime, 
+openTime: null, 
+openTimeout: vars.cb_profile.openTimeout, 
+errorCodes: vars.cb_profile.errorCodes
+})
+else 
+({
+status: "CLOSED",
+tripCount: vars.cb_profile.tripCount as Number + 1, // increment
+tripThreshold: vars.cb_profile.tripThreshold, // conf
+tripStartTime: if(vars.cb_profile.tripCount == 0) currentTime else vars.cb_profile.tripStartTime, // trip start time
+tripResetTime: vars.cb_profile.tripResetTime, // conf
+openTime: null, //initially null
+openTimeout: vars.cb_profile.openTimeout, // conf
+errorCodes: vars.cb_profile.errorCodes // conf
+})]]></ee:set-variable>
+									</ee:variables>
+								</ee:transform>
+								<os:store key="#['Circuit_Breaker_Profile']"
+									objectStore="Circuit_Breaker_OS">
+									<os:value><![CDATA[#[vars.cb_profile]]]></os:value>
+								</os:store>
+								<logger level="INFO" message="#[vars.cb_profile]" />
+							</on-error-propagate>
+						</error-handler>
+					</try>
+				</otherwise>
+			</choice>
+
+
+		</http-policy:source>
+
+	</http-policy:proxy>
+
+</mule>
