@@ -26,7 +26,9 @@ http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
 		name="{{{policyId}}}-custom-policy">
 
 		<http-policy:source>
-
+		
+			<logger level="INFO" message="Starting Custom Circuit Breaker Policy" />
+		
 			<try>
 				<os:retrieve key="#['Circuit_Breaker_Profile']"
 					objectStore="Circuit_Breaker_OS" target="cb_profile">
@@ -106,6 +108,27 @@ errorCodes: vars.cb_profile.errorCodes // conf
 }]]]></os:value>
 								</os:store>
 							</on-error-propagate>
+							
+							<!-- In Case of any other exception close the circuit -->
+							<on-error-propagate enableNotifications="true" type="ANY">
+							<os:store key="#['Circuit_Breaker_Profile']"
+							objectStore="Circuit_Breaker_OS">
+							<os:value><![CDATA[#[%dw 2.0
+output application/json
+---
+{
+status: "CLOSED",
+tripCount: 0, // default 0
+tripThreshold: vars.cb_profile.tripThreshold, // conf
+tripStartTime: null,
+tripResetTime: vars.cb_profile.tripResetTime, // conf
+openTime: null, 
+openTimeout: vars.cb_profile.openTimeout, // conf
+errorCodes: vars.cb_profile.errorCodes // conf
+}]]]></os:value>
+						</os:store>
+							</on-error-propagate>
+							
 						</error-handler>
 					</try>
 				</when>
@@ -114,7 +137,7 @@ errorCodes: vars.cb_profile.errorCodes // conf
 
 					<!--  Reply Circuit is Open -->
 					<http-transform:set-response statusCode="503" reasonPhrase="Circuit Breaker Active"> 
-						<http-transform:body>#['Circuit Breaker is Active since ' ++ vars.cb_profile.openTime ++ '. Time Elapsed: ' ++ (now() as Number - vars.cb_profile.openTime as Number) ++ '.']</http-transform:body>
+						<http-transform:body>#['Circuit Breaker is Active since ' ++ ((vars.cb_profile.openTime as DateTime) >> "Australia/Sydney") ++ '. Time Elapsed: ' ++ (now() as Number - vars.cb_profile.openTime as Number) ++ ' seconds.']</http-transform:body>
 					</http-transform:set-response>
 					
 				</when>
@@ -183,6 +206,7 @@ errorCodes: vars.cb_profile.errorCodes // conf
 				</otherwise>
 			</choice>
 
+		<logger level="INFO" message="Completed Custom Circuit Breaker Policy" />
 
 		</http-policy:source>
 
